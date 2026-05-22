@@ -48,7 +48,7 @@
   },
   "addFeed": {
     "title": "添加订阅源",
-    "hint": "粘贴订阅源地址、网站地址，或 YouTube / Reddit / Mastodon 链接 — Papr 会自动处理。",
+    "hint": "粘贴订阅源地址、网站地址，YouTube / Reddit / Mastodon 链接，或 rsshub:// 路由 — Papr 会自动处理。",
     "urlLabel": "订阅源或网站地址",
     "folderLabel": "文件夹",
     "noFolder": "不归入文件夹",
@@ -412,6 +412,8 @@
       "concurrencyDesc": "一次最多同时刷新几个订阅源",
       "timeout": "请求超时",
       "secondsUnit": " 秒",
+      "rsshub": "RSSHub 实例",
+      "rsshubDesc": "rsshub:// 订阅源的抓取地址。留空则使用公共实例（https://rsshub.app）。",
       "dangerZone": "危险操作",
       "resetSettings": "恢复默认设置",
       "resetSettingsDesc": "清除所有偏好与配置，不影响订阅与文章",

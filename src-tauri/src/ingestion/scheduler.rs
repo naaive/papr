@@ -4,7 +4,7 @@
 use crate::db;
 use crate::error::AppResult;
 use crate::ingestion::newsletter;
-use crate::ingestion::{fetch, parse};
+use crate::ingestion::{fetch, parse, rsshub};
 use crate::models::RefreshProgress;
 use crate::state::AppState;
 use crate::{notify, sync, tray};
@@ -116,14 +116,21 @@ pub async fn refresh_all(
         }
     };
 
-    let (feeds, concurrency, dedup, rules) = {
+    let (feeds, concurrency, dedup, rules, rsshub_instance) = {
         let conn = state.db.lock().await;
         let feeds = db::feeds_to_refresh(&conn)?;
         let concurrency =
             db::setting_parsed::<i64>(&conn, "net_concurrency", 6).clamp(1, 16) as usize;
         let dedup = db::setting_flag(&conn, "dedup_enabled", false);
         let rules = db::active_rules(&conn).unwrap_or_default();
-        (feeds, concurrency, dedup, rules)
+        // RSSHub feeds are stored as instance-independent `rsshub://` URLs and
+        // expanded against this instance at fetch time, so changing it re-routes
+        // every RSSHub feed at once.
+        let rsshub_instance = db::get_setting(&conn, rsshub::INSTANCE_SETTING)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| rsshub::DEFAULT_INSTANCE.to_string());
+        (feeds, concurrency, dedup, rules, rsshub_instance)
     };
     if let Some(p) = &progress {
         let _ = p.send(RefreshProgress::Started { total: feeds.len() });
@@ -136,9 +143,13 @@ pub async fn refresh_all(
     for (id, url, etag, last_modified) in feeds {
         let client = state.http();
         let sem = sem.clone();
+        // Expand `rsshub://` URLs against the configured instance for the fetch;
+        // a plain URL passes through unchanged. The original `url` travels back
+        // out for `refine_source_type`.
+        let fetch_url = rsshub::expand(&url, &rsshub_instance);
         set.spawn(async move {
             let _permit = sem.acquire().await;
-            let outcome = fetch_one(&client, &url, etag, last_modified).await;
+            let outcome = fetch_one(&client, &fetch_url, etag, last_modified).await;
             (id, url, outcome)
         });
     }

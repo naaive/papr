@@ -9,6 +9,7 @@ use crate::extraction;
 use crate::share::{self, KindleConfig, ShareArticle};
 use crate::ingestion::discovery::{self, DiscoveryResult};
 use crate::ingestion::newsletter::{self, NewsletterConfig};
+use crate::ingestion::rsshub;
 use crate::ingestion::sources::{self, Normalized};
 use crate::ingestion::{fetch, parse, scheduler};
 use crate::models::*;
@@ -71,42 +72,72 @@ pub async fn add_feed(
     // special source, rewrite it to its real feed URL. A YouTube vanity URL
     // needs the channel page fetched to learn its channel id; that single
     // network call lives here (the extraction logic itself is pure).
-    let (effective_url, forced_type): (String, Option<SourceType>) =
-        match sources::normalize_source(&url) {
-            Normalized::Feed { url, source_type } => (url, Some(source_type)),
-            Normalized::NeedsYoutubeResolution { page_url } => {
-                let (page_bytes, ct, _) = fetch::get(&client, &page_url).await?;
-                let html = fetch::decode_html(&page_bytes, ct.as_deref());
-                let channel_id = sources::extract_channel_id(&html)
-                    .ok_or_else(|| AppError::code("youtubeChannelNotFound"))?;
-                (
-                    sources::youtube_feed_url(&channel_id),
-                    Some(SourceType::Youtube),
-                )
+    //
+    // An `rsshub://` namespace URL is special (feature: RSSHub support): we
+    // fetch it through the user's configured RSSHub instance but *store* the
+    // instance-independent `rsshub://` form, so changing the instance later
+    // re-routes the feed. `stored_override` carries that canonical form.
+    let (effective_url, forced_type, stored_override): (String, Option<SourceType>, Option<String>) =
+        if rsshub::is_rsshub_url(&url) {
+            let instance = {
+                let conn = state.read().await;
+                db::get_setting(&conn, rsshub::INSTANCE_SETTING)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| rsshub::DEFAULT_INSTANCE.to_string())
+            };
+            let canonical = rsshub::canonical(&url);
+            (
+                rsshub::expand(&canonical, &instance),
+                Some(SourceType::Rss),
+                Some(canonical),
+            )
+        } else {
+            match sources::normalize_source(&url) {
+                Normalized::Feed { url, source_type } => (url, Some(source_type), None),
+                Normalized::NeedsYoutubeResolution { page_url } => {
+                    let (page_bytes, ct, _) = fetch::get(&client, &page_url).await?;
+                    let html = fetch::decode_html(&page_bytes, ct.as_deref());
+                    let channel_id = sources::extract_channel_id(&html)
+                        .ok_or_else(|| AppError::code("youtubeChannelNotFound"))?;
+                    (
+                        sources::youtube_feed_url(&channel_id),
+                        Some(SourceType::Youtube),
+                        None,
+                    )
+                }
+                Normalized::Untouched => (url.clone(), None, None),
             }
-            Normalized::Untouched => (url.clone(), None),
         };
 
     // Step 1: fetch whatever the user gave us (or the normalized feed URL).
     let (bytes, ct, final_url) = fetch::get(&client, &effective_url).await?;
 
-    // Step 2: if it is a feed use it directly, otherwise discover one.
-    let (feed_url, feed_bytes) = if parse::looks_like_feed(&bytes) {
-        (final_url, bytes)
-    } else {
-        let html = fetch::decode_html(&bytes, ct.as_deref());
-        let candidates = parse::discover_feeds(&html, &final_url);
-        let candidate = candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| AppError::code("noFeedFound"))?;
-        let (fb, _, _) = fetch::get(&client, &candidate).await?;
-        (candidate, fb)
+    // Step 2: if it is a feed use it directly, otherwise discover one. An
+    // RSSHub route always resolves to a feed document, so we keep its stored
+    // `rsshub://` form (`stored_override`) rather than the expanded instance
+    // URL and never fall through to page scraping. `parse_base` is the real
+    // fetched URL — used to resolve relative links — even when the stored URL
+    // is the `rsshub://` form.
+    let (feed_url, parse_base, feed_bytes) = match stored_override {
+        Some(canonical) => (canonical, final_url, bytes),
+        None if parse::looks_like_feed(&bytes) => (final_url.clone(), final_url, bytes),
+        None => {
+            let html = fetch::decode_html(&bytes, ct.as_deref());
+            let candidates = parse::discover_feeds(&html, &final_url);
+            let candidate = candidates
+                .into_iter()
+                .next()
+                .ok_or_else(|| AppError::code("noFeedFound"))?;
+            let (fb, _, _) = fetch::get(&client, &candidate).await?;
+            (candidate.clone(), candidate, fb)
+        }
     };
 
     // Step 3: parse and classify. A normalization step that already pinned a
-    // source type (YouTube / Reddit / Mastodon) wins over heuristic detection.
-    let parsed = parse::parse_feed(&feed_bytes, &feed_url)?;
+    // source type (YouTube / Reddit / Mastodon / RSSHub) wins over heuristic
+    // detection.
+    let parsed = parse::parse_feed(&feed_bytes, &parse_base)?;
     let source_type = match forced_type {
         Some(t) => t,
         None => parse::refine_source_type(
