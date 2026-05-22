@@ -99,6 +99,15 @@ struct SubList {
 struct Sub {
     url: Option<String>,
     title: Option<String>,
+    /// The feed's folders. FreshRSS files a feed under a single category, but
+    /// the GReader API models this as a list (`user/-/label/<name>` ids with a
+    /// human `label`); we take the first non-empty label as the folder name.
+    #[serde(default)]
+    categories: Vec<Category>,
+}
+#[derive(Deserialize)]
+struct Category {
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -192,6 +201,39 @@ pub async fn run_if_connected(app: &AppHandle) -> AppResult<bool> {
     }
 }
 
+/// Reconcile one FreshRSS subscription into the local feed list: subscribe to
+/// a feed we don't yet have and file it under its FreshRSS category folder
+/// (creating the folder when needed). An already-known feed is filed only when
+/// it currently has no folder, so a folder the user set inside Papr is kept
+/// rather than being overwritten by the server's organisation on every sync.
+fn reconcile_subscription(
+    conn: &rusqlite::Connection,
+    feed_url: &str,
+    title: Option<&str>,
+    folder: Option<&str>,
+) -> AppResult<()> {
+    match db::find_feed_by_url(conn, feed_url)? {
+        None => {
+            let folder_id = match folder {
+                Some(name) => Some(db::folder_id_by_name(conn, name)?),
+                None => None,
+            };
+            let title = title.unwrap_or(feed_url);
+            let source_type = parse::detect_source_type(feed_url);
+            db::insert_feed(conn, feed_url, None, title, None, source_type, folder_id)?;
+        }
+        Some(feed_id) => {
+            if let Some(name) = folder {
+                if db::feed_folder_id(conn, feed_id)?.is_none() {
+                    let folder_id = db::folder_id_by_name(conn, name)?;
+                    db::move_feed(conn, feed_id, Some(folder_id))?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Push queued changes, then pull subscriptions and read/starred state.
 /// Returns the number of local articles whose state was reconciled.
 pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
@@ -263,15 +305,18 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     {
         let state = app.state::<AppState>();
         let conn = state.db.lock().await;
-        for sub in subs.subscriptions {
-            let Some(feed_url) = sub.url.filter(|u| !u.is_empty()) else {
+        for sub in &subs.subscriptions {
+            let Some(feed_url) = sub.url.as_deref().filter(|u| !u.is_empty()) else {
                 continue;
             };
-            if db::find_feed_by_url(&conn, &feed_url)?.is_none() {
-                let title = sub.title.unwrap_or_else(|| feed_url.clone());
-                let st = parse::detect_source_type(&feed_url);
-                let _ = db::insert_feed(&conn, &feed_url, None, &title, None, st, None);
-            }
+            let folder = sub
+                .categories
+                .iter()
+                .filter_map(|c| c.label.as_deref())
+                .map(str::trim)
+                .find(|l| !l.is_empty());
+            // One bad subscription must not abort the whole pull.
+            let _ = reconcile_subscription(&conn, feed_url, sub.title.as_deref(), folder);
         }
     }
 
@@ -314,4 +359,76 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         }
     }
     Ok(reconciled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The name of the folder a feed currently sits in, or `None` if ungrouped.
+    fn folder_of(conn: &rusqlite::Connection, feed_url: &str) -> Option<String> {
+        let feed = db::list_feeds(conn)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.feed_url == feed_url)
+            .expect("feed should exist");
+        feed.folder_id.map(|id| {
+            db::list_folders(conn)
+                .unwrap()
+                .into_iter()
+                .find(|fo| fo.id == id)
+                .expect("folder should exist")
+                .name
+        })
+    }
+
+    #[test]
+    fn subscribes_a_new_feed_into_its_freshrss_folder() {
+        let conn = db::test_conn();
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("Tech")).unwrap();
+        assert_eq!(folder_of(&conn, "https://a.example/feed").as_deref(), Some("Tech"));
+    }
+
+    #[test]
+    fn subscribes_an_uncategorised_feed_without_a_folder() {
+        let conn = db::test_conn();
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), None).unwrap();
+        assert_eq!(folder_of(&conn, "https://a.example/feed"), None);
+    }
+
+    #[test]
+    fn files_an_existing_ungrouped_feed_into_its_folder() {
+        let conn = db::test_conn();
+        // First sync: the feed arrives without a category, so it is ungrouped —
+        // exactly the state of feeds synced before folders were handled.
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), None).unwrap();
+        assert_eq!(folder_of(&conn, "https://a.example/feed"), None);
+        // A later sync reports the category: the feed is filed into the folder.
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("News")).unwrap();
+        assert_eq!(folder_of(&conn, "https://a.example/feed").as_deref(), Some("News"));
+    }
+
+    #[test]
+    fn keeps_a_feeds_local_folder_over_the_server_category() {
+        let conn = db::test_conn();
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("Tech")).unwrap();
+        // The server later reports a different category; the local placement
+        // must win, and no duplicate feed may be created.
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("News")).unwrap();
+        assert_eq!(folder_of(&conn, "https://a.example/feed").as_deref(), Some("Tech"));
+        let count = db::list_feeds(&conn)
+            .unwrap()
+            .into_iter()
+            .filter(|f| f.feed_url == "https://a.example/feed")
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn reuses_an_existing_folder_by_name_case_insensitively() {
+        let conn = db::test_conn();
+        reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("Tech")).unwrap();
+        reconcile_subscription(&conn, "https://b.example/feed", Some("B"), Some("tech")).unwrap();
+        assert_eq!(db::list_folders(&conn).unwrap().len(), 1);
+    }
 }

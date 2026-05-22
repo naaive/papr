@@ -610,6 +610,19 @@ pub fn move_feed(conn: &Connection, id: i64, folder_id: Option<i64>) -> AppResul
     Ok(())
 }
 
+/// The folder a feed currently sits in, or `None` when it is ungrouped (and
+/// also `None` when the feed id is unknown). Lets FreshRSS sync file a synced
+/// feed under its server-side category only when the user hasn't already
+/// placed it in a folder locally.
+pub fn feed_folder_id(conn: &Connection, id: i64) -> AppResult<Option<i64>> {
+    Ok(conn
+        .query_row("SELECT folder_id FROM feeds WHERE id = ?1", params![id], |r| {
+            r.get::<_, Option<i64>>(0)
+        })
+        .optional()?
+        .flatten())
+}
+
 /// Set a feed's display title to a user-chosen value. `custom_title` is also
 /// raised so a later refresh's `update_feed_meta` does not revert the rename
 /// back to the feed document's own `<title>`.
@@ -1912,6 +1925,19 @@ pub fn requeue_sync(conn: &Connection, article_id: i64, field: &str, value: bool
     Ok(())
 }
 
+/// A fully-migrated in-memory connection for tests, including sibling modules
+/// (e.g. `sync`) that exercise the feed/folder helpers. The production `open` /
+/// `open_reader` register custom SQL functions; the in-memory connection must
+/// too so `preview_rule`'s `unicode_lower` resolves.
+#[cfg(test)]
+pub(crate) fn test_conn() -> Connection {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    MIGRATIONS.to_latest(&mut conn).unwrap();
+    register_functions(&conn).unwrap();
+    conn
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1919,13 +1945,7 @@ mod tests {
     /// An in-memory database with all migrations applied and one feed +
     /// article inserted, so highlight FKs resolve. Returns `(conn, article_id)`.
     fn test_db() -> (Connection, i64) {
-        let mut conn = Connection::open_in_memory().unwrap();
-        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
-        MIGRATIONS.to_latest(&mut conn).unwrap();
-        // The production `open` / `open_reader` register custom SQL functions;
-        // the in-memory test connection must too so `preview_rule`'s
-        // `unicode_lower` resolves.
-        register_functions(&conn).unwrap();
+        let conn = test_conn();
         let feed_id = insert_feed(
             &conn,
             "https://example.com/feed.xml",
