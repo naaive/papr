@@ -14,7 +14,14 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
     let mut builder = Builder::default();
     builder
         .link_rel(Some("noopener noreferrer nofollow"))
-        .add_generic_attributes(["loading"]);
+        .add_generic_attributes(["loading"])
+        // Load body images without a Referer. Many image hosts (e.g.
+        // sinaimg.cn, used by 喷嚏图卦 and other Chinese feeds) reject
+        // hotlinked requests that carry a cross-origin Referer with a 403,
+        // which the reader then hides as a broken image — so the article
+        // shows text but no pictures. Sending no Referer passes their
+        // hotlink check and is harmless for hosts that don't care.
+        .set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
 
     let parsed_base = base.and_then(|b| Url::parse(b).ok());
     if let Some(b) = parsed_base {
@@ -212,6 +219,17 @@ mod tests {
     fn first_image_falls_through_relative_to_next_absolute() {
         let html = r#"<img src="/rel.png"><img src="https://ex.com/real.jpg">"#;
         assert_eq!(first_image(html).as_deref(), Some("https://ex.com/real.jpg"));
+    }
+
+    #[test]
+    fn sanitize_marks_images_no_referrer() {
+        // Body images must carry referrerpolicy="no-referrer" so hotlink-
+        // protected hosts (sinaimg.cn etc.) don't 403 the request.
+        let out = sanitize(r#"<img src="https://wx1.sinaimg.cn/a.jpg">"#, None);
+        assert!(
+            out.contains(r#"referrerpolicy="no-referrer""#),
+            "img missing no-referrer policy: {out}"
+        );
     }
 
     #[test]

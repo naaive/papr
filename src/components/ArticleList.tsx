@@ -465,6 +465,9 @@ function CardThumb({ article }: { article: ArticleSummary }) {
         src={article.imageUrl}
         alt=""
         loading="lazy"
+        // No Referer, so hotlink-protected hosts (e.g. sinaimg.cn) don't 403
+        // the thumbnail. Matches the sanitizer's body images.
+        referrerPolicy="no-referrer"
         onError={() => setBroken(true)}
         style={{
           position: "absolute",
