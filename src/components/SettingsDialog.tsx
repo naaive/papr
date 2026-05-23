@@ -1541,14 +1541,16 @@ function NetworkGroup({ onToast }: { onToast: (m: string) => void }) {
   const [customProxy, setCustomProxy] = useState("");
   const [concurrency, setConcurrency] = useState(6);
   const [timeoutSec, setTimeoutSec] = useState(30);
+  const [rsshub, setRsshub] = useState("");
 
   useEffect(() => {
     Promise.all([
       api.getSetting("net_proxy"),
       api.getSetting("net_concurrency"),
       api.getSetting("net_timeout_sec"),
+      api.getSetting("rsshub_instance"),
     ])
-      .then(([p, c, t]) => {
+      .then(([p, c, t, r]) => {
         if (p === "system" || p === "none") setProxy(p);
         else if (p) {
           setProxy("custom");
@@ -1558,9 +1560,17 @@ function NetworkGroup({ onToast }: { onToast: (m: string) => void }) {
         // stale or corrupt stored value can't show a NaN / out-of-range readout.
         if (c) setConcurrency(clampSetting(c, 6, 1, 16));
         if (t) setTimeoutSec(clampSetting(t, 30, 5, 120));
+        if (r) setRsshub(r);
       })
       .catch(() => {});
   }, []);
+
+  // Persist the RSSHub instance, trimmed. Blank clears it so feeds fall back to
+  // the public instance. No client rebuild needed — it is read fresh at fetch
+  // time, so a changed instance re-routes every RSSHub feed on the next poll.
+  const saveRsshub = () => {
+    api.setSetting("rsshub_instance", rsshub.trim()).catch(() => {});
+  };
 
   const saveProxy = (mode: string, custom: string) => {
     const value = mode === "custom" ? custom : mode;
@@ -1630,6 +1640,18 @@ function NetworkGroup({ onToast }: { onToast: (m: string) => void }) {
               .then(() => api.applyNetworkSettings())
               .catch(() => {})
           }
+        />
+      </Row>
+      <Row
+        label={t("settings.advanced.rsshub")}
+        desc={t("settings.advanced.rsshubDesc")}
+      >
+        <input
+          className="s-text-input"
+          value={rsshub}
+          placeholder="https://rsshub.app"
+          onChange={(e) => setRsshub(e.target.value)}
+          onBlur={saveRsshub}
         />
       </Row>
     </div>

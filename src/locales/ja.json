@@ -48,7 +48,7 @@
   },
   "addFeed": {
     "title": "フィードを追加",
-    "hint": "フィードURL、ウェブサイトURL、または YouTube / Reddit / Mastodon のリンクを貼り付けてください — Papr が自動で処理します。",
+    "hint": "フィードURL、ウェブサイトURL、YouTube / Reddit / Mastodon のリンク、または rsshub:// ルートを貼り付けてください — Papr が自動で処理します。",
     "urlLabel": "フィードまたはサイトの URL",
     "folderLabel": "フォルダ",
     "noFolder": "フォルダなし",
@@ -412,6 +412,8 @@
       "concurrencyDesc": "一度に同時に更新するフィードの最大数",
       "timeout": "リクエストのタイムアウト",
       "secondsUnit": " 秒",
+      "rsshub": "RSSHub インスタンス",
+      "rsshubDesc": "rsshub:// フィードの取得元。空欄の場合は公開インスタンス（https://rsshub.app）を使用します。",
       "dangerZone": "危険な操作",
       "resetSettings": "既定値に戻す",
       "resetSettingsDesc": "すべての設定と構成を消去します。フィードと記事には影響しません",

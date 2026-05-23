@@ -48,7 +48,7 @@
   },
   "addFeed": {
     "title": "Add feed",
-    "hint": "Paste a feed URL, a website URL, or a YouTube / Reddit / Mastodon link — Papr figures out the rest.",
+    "hint": "Paste a feed URL, a website URL, a YouTube / Reddit / Mastodon link, or an rsshub:// route — Papr figures out the rest.",
     "urlLabel": "Feed or site URL",
     "folderLabel": "Folder",
     "noFolder": "No folder",
@@ -412,6 +412,8 @@
       "concurrencyDesc": "How many feeds to refresh at the same time at most",
       "timeout": "Request timeout",
       "secondsUnit": " s",
+      "rsshub": "RSSHub instance",
+      "rsshubDesc": "Where rsshub:// feeds are fetched from. Leave blank for the public instance (https://rsshub.app).",
       "dangerZone": "Danger zone",
       "resetSettings": "Reset to defaults",
       "resetSettingsDesc": "Clear all preferences and configuration; feeds and articles are unaffected",
