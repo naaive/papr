@@ -110,6 +110,22 @@ struct Category {
     label: Option<String>,
 }
 
+impl Sub {
+    /// The feed URL to subscribe to, ignoring an empty string.
+    fn feed_url(&self) -> Option<&str> {
+        self.url.as_deref().filter(|u| !u.is_empty())
+    }
+    /// The folder this feed belongs in: the first category with a non-empty
+    /// (trimmed) `label`, or `None` when the feed is uncategorised.
+    fn folder(&self) -> Option<&str> {
+        self.categories
+            .iter()
+            .filter_map(|c| c.label.as_deref())
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+    }
+}
+
 #[derive(Deserialize)]
 struct Contents {
     #[serde(default)]
@@ -306,17 +322,11 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         let state = app.state::<AppState>();
         let conn = state.db.lock().await;
         for sub in &subs.subscriptions {
-            let Some(feed_url) = sub.url.as_deref().filter(|u| !u.is_empty()) else {
+            let Some(feed_url) = sub.feed_url() else {
                 continue;
             };
-            let folder = sub
-                .categories
-                .iter()
-                .filter_map(|c| c.label.as_deref())
-                .map(str::trim)
-                .find(|l| !l.is_empty());
             // One bad subscription must not abort the whole pull.
-            let _ = reconcile_subscription(&conn, feed_url, sub.title.as_deref(), folder);
+            let _ = reconcile_subscription(&conn, feed_url, sub.title.as_deref(), sub.folder());
         }
     }
 
@@ -430,5 +440,79 @@ mod tests {
         reconcile_subscription(&conn, "https://a.example/feed", Some("A"), Some("Tech")).unwrap();
         reconcile_subscription(&conn, "https://b.example/feed", Some("B"), Some("tech")).unwrap();
         assert_eq!(db::list_folders(&conn).unwrap().len(), 1);
+    }
+
+    /// End-to-end of the subscription pull *minus the network*: a verbatim
+    /// FreshRSS `subscription/list?output=json` body is deserialised with the
+    /// real serde structs, then fed through the same `feed_url()` / `folder()`
+    /// extraction and `reconcile_subscription` calls the sync loop uses. This
+    /// guards the wiring the direct-arg tests above skip: that FreshRSS's actual
+    /// `categories` shape parses, and that the folder label is pulled from it.
+    #[test]
+    fn parses_a_real_freshrss_payload_and_files_each_feed() {
+        // Shape taken from FreshRSS's GReader `subscription/list` output, extra
+        // fields (id, htmlUrl, iconUrl, sortid…) included to prove serde skips
+        // the ones we don't model.
+        let body = r#"{
+          "subscriptions": [
+            {
+              "id": "feed/1",
+              "title": "Rust Blog",
+              "categories": [{ "id": "user/-/label/Tech", "label": "Tech" }],
+              "url": "https://blog.rust-lang.org/feed.xml",
+              "htmlUrl": "https://blog.rust-lang.org",
+              "iconUrl": "https://blog.rust-lang.org/favicon.ico",
+              "sortid": "ABCD0001"
+            },
+            {
+              "id": "feed/2",
+              "title": "Hacker News",
+              "categories": [{ "id": "user/-/label/Tech", "label": "Tech" }],
+              "url": "https://news.ycombinator.com/rss"
+            },
+            {
+              "id": "feed/3",
+              "title": "Unfiled Feed",
+              "categories": [],
+              "url": "https://example.com/unfiled.xml"
+            },
+            {
+              "id": "feed/4",
+              "title": "Blank Category",
+              "categories": [{ "id": "user/-/label/", "label": "   " }],
+              "url": "https://example.com/blank.xml"
+            },
+            {
+              "id": "feed/5",
+              "title": "No URL",
+              "categories": [{ "id": "user/-/label/Tech", "label": "Tech" }],
+              "url": ""
+            }
+          ]
+        }"#;
+
+        let subs: SubList = serde_json::from_str(body).expect("real payload must deserialize");
+        let conn = db::test_conn();
+        for sub in &subs.subscriptions {
+            let Some(feed_url) = sub.feed_url() else { continue };
+            reconcile_subscription(&conn, feed_url, sub.title.as_deref(), sub.folder()).unwrap();
+        }
+
+        // Two feeds carry the same "Tech" label → exactly one folder, both in it.
+        assert_eq!(db::list_folders(&conn).unwrap().len(), 1);
+        assert_eq!(
+            folder_of(&conn, "https://blog.rust-lang.org/feed.xml").as_deref(),
+            Some("Tech")
+        );
+        assert_eq!(
+            folder_of(&conn, "https://news.ycombinator.com/rss").as_deref(),
+            Some("Tech")
+        );
+        // No category, and a whitespace-only label, both resolve to ungrouped.
+        assert_eq!(folder_of(&conn, "https://example.com/unfiled.xml"), None);
+        assert_eq!(folder_of(&conn, "https://example.com/blank.xml"), None);
+        // The empty-URL subscription is skipped, not inserted as an empty feed.
+        assert!(db::find_feed_by_url(&conn, "").unwrap().is_none());
+        assert_eq!(db::list_feeds(&conn).unwrap().len(), 4);
     }
 }
