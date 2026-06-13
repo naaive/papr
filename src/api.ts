@@ -122,6 +122,15 @@ export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
   return invoke<void>("ai_digest", { onToken: channel });
 }
 
+export function aiTranslate(
+  articleId: number,
+  onToken: (e: AiEvent) => void,
+): Promise<void> {
+  const channel = new Channel<AiEvent>();
+  channel.onmessage = onToken;
+  return invoke<void>("ai_translate", { articleId, onToken: channel });
+}
+
 // ── settings ──
 export const getSetting = (key: string) =>
   invoke<string | null>("get_setting", { key });

@@ -167,6 +167,8 @@
     "tbAiSummary": "AI 摘要 (I)",
     "tbToggleFullText": "切换全文 / 摘要",
     "tbExtractFullText": "提取全文",
+    "tbTranslate": "翻译",
+    "tbShowOriginal": "显示原文",
     "tbCopyLink": "复制链接",
     "tbShare": "分享",
     "tbTags": "标签",
@@ -178,6 +180,7 @@
     "extractingFullText": "正在提取全文…",
     "noContent": "暂无正文内容。",
     "aiSummaryTitle": "AI 摘要",
+    "translating": "正在翻译…",
     "aiReadingFullText": "正在阅读全文…",
     "aiError": "无法生成摘要",
     "aiDisclaimer": "由本地模型生成 · 仅供参考 · 内容可能不准确"

@@ -14,9 +14,15 @@ use tauri::ipc::Channel;
 /// requests override it with a generous bound.
 const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Output token cap, applied to every provider so a response stays bounded in
-/// length and cost. Summaries / Q&A / digests all fit comfortably within it.
-const MAX_TOKENS: u32 = 1024;
+/// Default output token cap, applied per provider so a response stays bounded
+/// in length and cost. Summaries / Q&A / digests all fit comfortably within it.
+pub const MAX_TOKENS: u32 = 1024;
+
+/// Output token cap for a full-article translation. A translation is roughly as
+/// long as the source text (unlike a summary, which compresses it), so it needs
+/// a far larger budget than `MAX_TOKENS` or a long article would be cut off
+/// mid-sentence. Still bounded so a runaway generation stays capped in cost.
+pub const TRANSLATE_MAX_TOKENS: u32 = 8192;
 
 /// Hard cap on the SSE line buffer. A well-behaved provider delimits every
 /// event with a newline, so the buffer never holds more than a single frame.
@@ -126,11 +132,14 @@ pub async fn stream_chat(
     cfg: &AiConfig,
     system: &str,
     user: &str,
+    max_tokens: u32,
     channel: &Channel<AiEvent>,
 ) -> AppResult<ChatOutcome> {
     let result = match cfg.provider {
-        Provider::Anthropic => stream_anthropic(client, cfg, system, user, channel).await,
-        Provider::OpenAi => stream_openai(client, cfg, system, user, channel).await,
+        Provider::Anthropic => {
+            stream_anthropic(client, cfg, system, user, max_tokens, channel).await
+        }
+        Provider::OpenAi => stream_openai(client, cfg, system, user, max_tokens, channel).await,
     };
     match &result {
         Ok(_) => {
@@ -148,11 +157,12 @@ async fn stream_anthropic(
     cfg: &AiConfig,
     system: &str,
     user: &str,
+    max_tokens: u32,
     channel: &Channel<AiEvent>,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "system": system,
         "stream": true,
         "messages": [{ "role": "user", "content": user }],
@@ -174,11 +184,12 @@ async fn stream_openai(
     cfg: &AiConfig,
     system: &str,
     user: &str,
+    max_tokens: u32,
     channel: &Channel<AiEvent>,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "stream": true,
         "messages": [
             { "role": "system", "content": system },

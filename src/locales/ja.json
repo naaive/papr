@@ -167,6 +167,8 @@
     "tbAiSummary": "AI要約 (I)",
     "tbToggleFullText": "全文 / 要約を切り替え",
     "tbExtractFullText": "全文を抽出",
+    "tbTranslate": "翻訳",
+    "tbShowOriginal": "原文を表示",
     "tbCopyLink": "リンクをコピー",
     "tbShare": "共有",
     "tbTags": "タグ",
@@ -178,6 +180,7 @@
     "extractingFullText": "全文を抽出中…",
     "noContent": "本文がありません。",
     "aiSummaryTitle": "AI要約",
+    "translating": "翻訳中…",
     "aiReadingFullText": "全文を読み込み中…",
     "aiError": "要約を生成できませんでした",
     "aiDisclaimer": "ローカルモデルによる生成 · 参考用 · 内容は不正確な場合があります"

@@ -155,8 +155,16 @@ export default function Reader({ onToast }: Props) {
   const [sendTo, setSendTo] = useState<{ x: number; y: number } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
   const [progress, setProgress] = useState(0);
+  // AI translation of the article into the UI language, shown in place of the
+  // original body when `translateOn`. Streamed on demand and never persisted.
+  const [translateOn, setTranslateOn] = useState(false);
+  const [translation, setTranslation] = useState<string | null>(null);
+  const [translating, setTranslating] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Identifies the latest translation run, so a stream that settles after the
+  // user switched articles (or retoggled) can't clobber newer state.
+  const translateRunRef = useRef(0);
   // Article id we already auto-marked read via scroll, so a flurry of scroll
   // events near the foot doesn't fire `setRead` repeatedly before the
   // optimistic cache patch lands.
@@ -177,6 +185,13 @@ export default function Reader({ onToast }: Props) {
     // replaces the short feed snippet, which keeps the same article id.
   }, [a?.extractedHtml, a?.contentHtml]);
 
+  // Render the streamed translation as markdown once, not on every keystroke of
+  // the stream's surrounding re-renders. `renderMarkdown` also sanitizes it.
+  const translatedHtml = useMemo(
+    () => (translation ? renderMarkdown(translation) : ""),
+    [translation],
+  );
+
   // Reset scroll + extraction view on article change.
   useEffect(() => {
     setShowExtracted(true);
@@ -185,6 +200,13 @@ export default function Reader({ onToast }: Props) {
     setSendTo(null);
     setHeroBroken(false);
     setProgress(0);
+    // Drop any translation: it belongs to the article we're leaving. Bumping
+    // the run ref also neutralises an in-flight stream so its late deltas can't
+    // land on the new article.
+    translateRunRef.current++;
+    setTranslateOn(false);
+    setTranslation(null);
+    setTranslating(false);
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
@@ -293,6 +315,51 @@ export default function Reader({ onToast }: Props) {
     return () => window.clearTimeout(timer);
   }, [markReadIfAtFoot, showExtracted, a?.extractedHtml, a?.contentHtml]);
 
+
+  // Toggle the translated view. The translation is streamed the first time it's
+  // requested for an article and then kept, so re-toggling just swaps which
+  // body is shown without re-calling the model.
+  const toggleTranslate = () => {
+    if (!a) return;
+    if (translation !== null || translating) {
+      setTranslateOn((v) => !v);
+      return;
+    }
+    const articleId = a.id;
+    const run = ++translateRunRef.current;
+    setTranslateOn(true);
+    setTranslating(true);
+    setTranslation("");
+    // An error surfaces both as an `error` channel event (precise provider
+    // message) and as the rejected promise; toast only the first so the user
+    // doesn't see it twice. The `.catch` still reports failures that abort
+    // before streaming (no key, bad config) and so emit no `error` event.
+    let sawErrorEvent = false;
+    const fail = () => {
+      if (translateRunRef.current !== run) return;
+      setTranslation(null);
+      setTranslateOn(false);
+    };
+    api
+      .aiTranslate(articleId, (ev) => {
+        if (translateRunRef.current !== run) return;
+        if (ev.type === "delta") setTranslation((s) => (s ?? "") + ev.data);
+        else if (ev.type === "error") {
+          sawErrorEvent = true;
+          toast.error(ev.data);
+          fail();
+        }
+      })
+      .catch((e) => {
+        if (translateRunRef.current === run && !sawErrorEvent) {
+          reportError(e);
+          fail();
+        }
+      })
+      .finally(() => {
+        if (translateRunRef.current === run) setTranslating(false);
+      });
+  };
 
   const copyLink = () => {
     if (!a?.url) return;
@@ -451,6 +518,18 @@ export default function Reader({ onToast }: Props) {
           aria-busy={extract.isPending}
         >
           <Icon name="text" size={16} />
+        </button>
+        <button
+          className={`tb-btn ${translateOn ? "on" : ""} ${
+            translating ? "spinning" : ""
+          }`}
+          onClick={toggleTranslate}
+          title={translateOn ? t("reader.tbShowOriginal") : t("reader.tbTranslate")}
+          aria-label={translateOn ? t("reader.tbShowOriginal") : t("reader.tbTranslate")}
+          aria-pressed={translateOn}
+          aria-busy={translating}
+        >
+          <Icon name="globe" size={16} />
         </button>
         <button
           className="tb-btn"
@@ -624,14 +703,32 @@ export default function Reader({ onToast }: Props) {
               </div>
             ))}
 
+          {/* The original body stays mounted (only hidden) while translated so
+              its highlights and image handlers survive a toggle back. */}
           <div
             className="article-body"
             ref={bodyRef}
+            hidden={translateOn}
             onClick={makeLinkClickHandler(a.url)}
             dangerouslySetInnerHTML={{
               __html: body || `<p><em>${t("reader.noContent")}</em></p>`,
             }}
           />
+          {translateOn &&
+            (translating && !translation ? (
+              <div className="ai-loading">
+                <span className="ai-dot" />
+                <span className="ai-dot" />
+                <span className="ai-dot" />
+                <span style={{ marginLeft: 4 }}>{t("reader.translating")}</span>
+              </div>
+            ) : (
+              <div
+                className="article-body"
+                onClick={makeLinkClickHandler(a.url)}
+                dangerouslySetInnerHTML={{ __html: translatedHtml }}
+              />
+            ))}
         </article>
       </div>
 

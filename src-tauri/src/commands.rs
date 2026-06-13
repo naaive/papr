@@ -525,6 +525,17 @@ fn response_language(conn: &rusqlite::Connection) -> &'static str {
     }
 }
 
+/// The UI language as a bare language name, for prompts that name the target
+/// language inline (e.g. "Translate into {lang}") rather than appending a
+/// standalone directive sentence the way `response_language` does.
+fn target_language(conn: &rusqlite::Connection) -> &'static str {
+    match db::get_setting(conn, "language").ok().flatten().as_deref() {
+        Some("zh") => "Simplified Chinese",
+        Some("ja") => "Japanese",
+        _ => "English",
+    }
+}
+
 /// Stream an AI summary of one article; the full summary is also persisted.
 #[tauri::command]
 pub async fn ai_summarize(
@@ -562,7 +573,7 @@ pub async fn ai_summarize(
     let user = format!("Title: {title}\n\n{}", truncate(&body, 8000));
 
     let http = state.http();
-    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    let outcome = ai::stream_chat(&http, &cfg, &system, &user, ai::MAX_TOKENS, &on_token).await?;
     // Persist only a summary that streamed to completion. If the user closed
     // the AI panel mid-stream the channel was dropped and `outcome.text` holds
     // just a truncated fragment — caching that would make the next open show a
@@ -615,7 +626,7 @@ pub async fn ai_ask(
     };
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    ai::stream_chat(&http, &cfg, &system, &user, ai::MAX_TOKENS, &on_token).await?;
     Ok(())
 }
 
@@ -651,7 +662,42 @@ pub async fn ai_digest(
     let user = format!("Recent articles from my feeds:\n\n{corpus}");
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    ai::stream_chat(&http, &cfg, &system, &user, ai::MAX_TOKENS, &on_token).await?;
+    Ok(())
+}
+
+/// Stream an AI translation of one article into the UI language. Unlike the
+/// summary, a translation is not persisted — it is a transient reading aid
+/// regenerated on demand, and caching it would also need invalidating whenever
+/// the UI language changes.
+#[tauri::command]
+pub async fn ai_translate(
+    state: State<'_, AppState>,
+    article_id: i64,
+    on_token: Channel<AiEvent>,
+) -> AppResult<()> {
+    let (title, body, cfg, lang) = {
+        let conn = state.read().await;
+        let (title, body) = db::article_text(&conn, article_id)?;
+        (title, body, load_ai_config(&conn)?, target_language(&conn))
+    };
+    // A title-only item carries nothing to translate; bail out like the other
+    // AI commands rather than ask the model to translate an empty body.
+    if body.trim().is_empty() {
+        return Err(AppError::code("noArticleBody"));
+    }
+    let system = format!(
+        "You are a professional translator. Translate the article the user \
+         provides into {lang}, including its title. Preserve the meaning, tone, \
+         and paragraph structure, and keep any markdown formatting intact. \
+         Render the title as a level-1 markdown heading. Translate only — add no \
+         notes, commentary, or explanation. If a passage is already in {lang}, \
+         leave it unchanged."
+    );
+    let user = format!("# {title}\n\n{}", truncate(&body, 12000));
+
+    let http = state.http();
+    ai::stream_chat(&http, &cfg, &system, &user, ai::TRANSLATE_MAX_TOKENS, &on_token).await?;
     Ok(())
 }
 
